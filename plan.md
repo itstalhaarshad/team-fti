@@ -28,8 +28,10 @@ Commit at every phase; judges read the git log.
 - [x] **Phase 2 — Shared memory + agent panel.** Append-only ledger + precedent/consistency +
       audit log; Summarizer + orchestrator over a multi-student batch. ✅ Verified (ledger + audit
       files persist; flagged answers correctly write no precedent).
-- [ ] **Phase 3 — Streamlit UI.** setup → upload → review/edit (reasoning + flags) → dashboard.
-- [ ] **Phase 4 — Export + polish.** XLSX/CSV, image cleanup, demo data.
+- [x] **Phase 3 — Streamlit UI.** setup → upload → review/edit (reasoning + flags + editable
+      scores) → dashboard. ✅ Boots (HTTP 200) & passes AppTest (4 tabs, no exceptions).
+- [x] **Phase 4 — Export.** XLSX/CSV download from dashboard; image cleanup in core/images.
+      ✅ Export unit-tested. (Polish + real-sample tuning pending teammate's photos.)
 - [ ] **Phase 5 (stretch) — Flag → teacher clarifies → re-grade only flagged answers.**
 
 ## Out of scope today
