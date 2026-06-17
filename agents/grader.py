@@ -30,6 +30,11 @@ SYSTEM = (
 )
 
 
+def _round_half(x: float) -> float:
+    """Round to the nearest 0.5 (teacher-friendly marks)."""
+    return round(x * 2) / 2
+
+
 def _format_precedents(precedents: List[Precedent]) -> str:
     if not precedents:
         return "No precedents yet — you are setting the standard for this batch."
@@ -64,7 +69,7 @@ def grade_sheet(
     answers: List[GradedAnswer] = []
     for a in out.answers:
         a.max_marks = max_by_q.get(a.number, a.max_marks)
-        a.awarded_marks = max(0.0, min(a.awarded_marks, a.max_marks))
+        a.awarded_marks = _round_half(max(0.0, min(a.awarded_marks, a.max_marks)))
         if a.flagged:
             a.awarded_marks = 0.0
         answers.append(a)
@@ -107,7 +112,7 @@ def regrade_question(
     ans: GradedAnswer = generate_json(parts, schema=GradedAnswer, system=REGRADE_SYSTEM)
     ans.number = question_number
     ans.max_marks = q.max_marks
-    ans.awarded_marks = max(0.0, min(ans.awarded_marks, q.max_marks))
+    ans.awarded_marks = _round_half(max(0.0, min(ans.awarded_marks, q.max_marks)))
     if ans.flagged:
         ans.awarded_marks = 0.0
     return ans
