@@ -1,0 +1,12 @@
+[theme]
+base = "light"
+primaryColor = "#4F46E5"
+
+[server]
+# Student sheets are photos/PDFs — allow larger uploads than the 200MB default is fine,
+# but cap it to keep memory sane on Community Cloud's small instances.
+maxUploadSize = 50
+headless = true
+
+[browser]
+gatherUsageStats = false

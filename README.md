@@ -41,5 +41,27 @@ python cli.py --rubric data/samples/answer_key.jpg --sheet data/samples/student1
 streamlit run app.py
 ```
 
+## Deploying (Streamlit Community Cloud)
+The app deploys straight from GitHub — no code changes needed (keys are read from the
+environment, and Cloud injects its secrets as env vars).
+
+1. Push to GitHub: `git push origin main`.
+2. Go to [share.streamlit.io](https://share.streamlit.io) → **Create app** → pick this repo,
+   branch `main`, **Main file path** = `app.py`.
+3. Under **Advanced settings**:
+   - **Python version**: select 3.12 (set here, not via `runtime.txt` — Cloud ignores that).
+   - **Secrets**: paste your config as TOML (this replaces your local `.env`):
+     ```toml
+     LLM_PROVIDER = "gemini"
+     LLM_MODEL = "gemini-2.5-flash"
+     GEMINI_API_KEY = "your-real-key-here"
+     ENABLE_RUBRIC_CACHE = "false"
+     ```
+4. **Deploy.**
+
+> ⚠️ Community Cloud has an **ephemeral filesystem**: the file-backed memory store under
+> `data/batches/` is wiped whenever the app reboots or sleeps. Fine for a demo; move it to an
+> external store for durable use.
+
 ## Status
 See `plan.md` for the phased build order and live checklist.
