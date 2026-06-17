@@ -19,3 +19,8 @@ data/samples/*
 # os
 .DS_Store
 Thumbs.db
+
+# one-off dev scripts / local logs
+_*.py
+_*.log
+*.log
