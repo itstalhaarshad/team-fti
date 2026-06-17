@@ -16,26 +16,40 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from core.llm import ImagePart
-from core.memory import Memory
+from core.memory import _EXT_MIME, _MIME_EXT, Memory
 from core.schemas import (BatchMeta, GradedAnswer, Precedent, Rubric,
                           StudentResult, StudentSummary)
 
 _client = None
 
 
+def _ensure_app():
+    import firebase_admin
+    from firebase_admin import credentials
+    if not firebase_admin._apps:
+        sa = os.environ.get("FIREBASE_SERVICE_ACCOUNT", "firebase-service-account.json")
+        if not os.path.exists(sa):
+            raise RuntimeError(f"Firebase service account not found at {sa!r} "
+                               "(set FIREBASE_SERVICE_ACCOUNT).")
+        bucket = os.environ.get("FIREBASE_STORAGE_BUCKET", "").strip()
+        opts = {"storageBucket": bucket} if bucket else None
+        firebase_admin.initialize_app(credentials.Certificate(sa), opts)
+
+
 def _db():
     global _client
     if _client is None:
-        import firebase_admin
-        from firebase_admin import credentials, firestore
-        if not firebase_admin._apps:
-            sa = os.environ.get("FIREBASE_SERVICE_ACCOUNT", "firebase-service-account.json")
-            if not os.path.exists(sa):
-                raise RuntimeError(f"Firebase service account not found at {sa!r} "
-                                   "(set FIREBASE_SERVICE_ACCOUNT).")
-            firebase_admin.initialize_app(credentials.Certificate(sa))
+        from firebase_admin import firestore
+        _ensure_app()
         _client = firestore.client()
     return _client
+
+
+def _bucket():
+    """Default Firebase Storage bucket (needs FIREBASE_STORAGE_BUCKET). Raises if unavailable."""
+    from firebase_admin import storage
+    _ensure_app()
+    return storage.bucket()
 
 
 class FirestoreStore:
@@ -126,12 +140,38 @@ class FirestoreStore:
         return {d.id: StudentSummary.model_validate(d.to_dict())
                 for d in self._doc.collection("summaries").stream()}
 
-    # ---- sheets (local disk) ----
+    # ---- sheets (Firebase Storage, with local-disk fallback) ----
+    def _sheet_prefix(self, student_id: str) -> str:
+        return f"users/{self.uid}/batches/{self.batch_id}/sheets/{student_id}/"
+
     def save_sheet_parts(self, student_id: str, parts: List[ImagePart]) -> None:
-        self._sheets.save_sheet_parts(student_id, parts)
+        try:
+            bucket = _bucket()
+            prefix = self._sheet_prefix(student_id)
+            for old in bucket.list_blobs(prefix=prefix):  # replace any existing pages
+                old.delete()
+            for i, p in enumerate(parts):
+                ext = _MIME_EXT.get(p.mime_type, "bin")
+                bucket.blob(f"{prefix}page_{i}.{ext}").upload_from_string(
+                    p.data, content_type=p.mime_type)
+            self._audit("save_sheet", {"student_id": student_id, "pages": len(parts), "store": "firebase"})
+        except Exception as e:  # Storage not enabled / unreachable -> keep working on local disk
+            self._sheets.save_sheet_parts(student_id, parts)
+            self._audit("save_sheet", {"student_id": student_id, "pages": len(parts),
+                                       "store": "local-fallback", "error": str(e)[:140]})
 
     def load_sheet_parts(self, student_id: str) -> List[ImagePart]:
-        return self._sheets.load_sheet_parts(student_id)
+        try:
+            blobs = sorted(_bucket().list_blobs(prefix=self._sheet_prefix(student_id)),
+                           key=lambda b: b.name)
+            if blobs:
+                return [ImagePart(data=b.download_as_bytes(),
+                                  mime_type=_EXT_MIME.get(b.name.rsplit(".", 1)[-1].lower(),
+                                                          "application/octet-stream"))
+                        for b in blobs]
+        except Exception:
+            pass
+        return self._sheets.load_sheet_parts(student_id)  # local fallback
 
 
 def list_batches_fs(uid: Optional[str]) -> List[dict]:
