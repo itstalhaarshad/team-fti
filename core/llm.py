@@ -36,6 +36,18 @@ class ImagePart:
 Part = Union[str, ImagePart]
 
 
+class LLMError(Exception):
+    """A surfaced provider error. `status` is the HTTP status (int) when known."""
+    def __init__(self, status, message: str):
+        self.status = status
+        self.message = message
+        super().__init__(f"[{status}] {message}")
+
+
+# statuses worth retrying (transient); everything else fails fast
+_RETRYABLE = {429, 500, 502, 503, 504}
+
+
 def _provider() -> str:
     return os.environ.get("LLM_PROVIDER", "gemini").strip().lower()
 
@@ -51,7 +63,6 @@ def generate_json(parts: List[Part], schema: Type[T], system: str | None = None,
                   *, max_retries: int = 2) -> T:
     """Send text+image parts, force structured JSON, return a validated `schema` instance."""
     provider = _provider()
-    last_err: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
             if provider == "gemini":
@@ -61,13 +72,17 @@ def generate_json(parts: List[Part], schema: Type[T], system: str | None = None,
             if provider == "openai":
                 return _openai_generate_json(parts, schema, system)
             raise ValueError(f"Unknown LLM_PROVIDER={provider!r} (expected gemini|claude|openai)")
-        except Exception as e:  # transient API / parse hiccup -> brief backoff + retry
-            last_err = e
+        except LLMError as e:
+            # only retry transient statuses; fail fast on 400/401/403/404 (retrying won't help)
+            if e.status in _RETRYABLE and attempt < max_retries:
+                time.sleep(min(3 * (2 ** attempt), 15))
+                continue
+            raise
+        except Exception as e:  # parse hiccup etc. -> brief backoff + retry
             if attempt < max_retries:
                 time.sleep(1.5 * (attempt + 1))
-            else:
-                raise
-    raise last_err  # pragma: no cover
+                continue
+            raise
 
 
 # --------------------------------------------------------------------------- #
@@ -76,19 +91,26 @@ def generate_json(parts: List[Part], schema: Type[T], system: str | None = None,
 _gemini_client = None
 
 
+_gemini_key = None
+
+
 def _get_gemini_client():
-    global _gemini_client
-    if _gemini_client is None:
+    """Build (or rebuild if the key changed) the Gemini client."""
+    global _gemini_client, _gemini_key
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        raise LLMError(None, "GEMINI_API_KEY is not set. On Streamlit Cloud add it under "
+                             "Manage app → Settings → Secrets.")
+    if _gemini_client is None or key != _gemini_key:
         from google import genai
-        key = os.environ.get("GEMINI_API_KEY")
-        if not key:
-            raise RuntimeError("GEMINI_API_KEY is not set (put it in .env).")
         _gemini_client = genai.Client(api_key=key)
+        _gemini_key = key
     return _gemini_client
 
 
 def _gemini_generate_json(parts: List[Part], schema: Type[T], system: str | None) -> T:
     from google.genai import types
+    from google.genai import errors as genai_errors
 
     contents = []
     for p in parts:
@@ -103,9 +125,16 @@ def _gemini_generate_json(parts: List[Part], schema: Type[T], system: str | None
         system_instruction=system,
         temperature=0,  # grading must be deterministic / reproducible
     )
-    resp = _get_gemini_client().models.generate_content(
-        model=_model(), contents=contents, config=config,
-    )
+    try:
+        resp = _get_gemini_client().models.generate_content(
+            model=_model(), contents=contents, config=config,
+        )
+    except genai_errors.APIError as e:
+        # surface the REAL status + message (Streamlit otherwise redacts it)
+        status = getattr(e, "code", None) or getattr(e, "status_code", None)
+        message = getattr(e, "message", None) or str(e)
+        raise LLMError(status, message) from e
+
     # resp.parsed is already a `schema` instance; fall back to parsing raw text.
     if getattr(resp, "parsed", None) is not None:
         return resp.parsed  # type: ignore[return-value]
