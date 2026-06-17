@@ -32,7 +32,10 @@ Commit at every phase; judges read the git log.
       scores) → dashboard. ✅ Boots (HTTP 200) & passes AppTest (4 tabs, no exceptions).
 - [x] **Phase 4 — Export.** XLSX/CSV download from dashboard; image cleanup in core/images.
       ✅ Export unit-tested. (Polish + real-sample tuning pending teammate's photos.)
-- [ ] **Phase 5 (stretch) — Flag → teacher clarifies → re-grade only flagged answers.**
+- [x] **Phase 5 (stretch) — Flag → teacher clarifies → re-grade only flagged answers.** ✅
+      Sheets persisted to memory; `regrade_flagged` re-grades one question with the teacher's
+      clarification, clears the flag, appends a precedent. Live-tested: flagged Q re-graded to
+      full marks; audit trail correct.
 
 ## Out of scope today
 login/auth, cloud DB, mobile app, essay grading, analytics.

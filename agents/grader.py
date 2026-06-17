@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from core.llm import Part, generate_json
-from core.schemas import GradedAnswer, GraderOutput, Precedent, Rubric, StudentResult
+from core.schemas import Confidence, GradedAnswer, GraderOutput, Precedent, Rubric, StudentResult
 
 SYSTEM = (
     "You are the Grader (First Marker) on an examiner panel. You read handwritten student answers "
@@ -70,3 +70,44 @@ def grade_sheet(
         answers.append(a)
 
     return StudentResult(student_id=student_id, answers=answers)
+
+
+REGRADE_SYSTEM = (
+    SYSTEM + "\n\nThis is a RE-GRADE of a single previously-flagged question. The teacher has "
+    "added a clarification — treat it as authoritative context for reading or interpreting the "
+    "answer. Look again carefully. Grade it now if you reasonably can; only keep it flagged if it "
+    "is still genuinely unreadable or absent."
+)
+
+
+def regrade_question(
+    student_id: str,
+    sheet_parts: List[Part],
+    rubric: Rubric,
+    question_number: str,
+    clarification: str,
+    precedents: Optional[List[Precedent]] = None,
+) -> GradedAnswer:
+    """Re-grade ONE question for one student, given a teacher clarification. Returns the new answer."""
+    q = next((q for q in rubric.questions if q.number == question_number), None)
+    if q is None:
+        raise ValueError(f"Question {question_number} not in rubric.")
+
+    parts: List[Part] = [
+        f"Student id: {student_id}",
+        f"Re-grade ONLY question {question_number}.",
+        "RUBRIC for this question:\n" + q.model_dump_json(indent=2),
+        "Teacher clarification (authoritative):\n" + (clarification or "(none)"),
+        _format_precedents(precedents or []),
+        f"The student's answer sheet image(s) follow. Transcribe and grade question "
+        f"{question_number} now.",
+    ]
+    parts.extend(sheet_parts)
+
+    ans: GradedAnswer = generate_json(parts, schema=GradedAnswer, system=REGRADE_SYSTEM)
+    ans.number = question_number
+    ans.max_marks = q.max_marks
+    ans.awarded_marks = max(0.0, min(ans.awarded_marks, q.max_marks))
+    if ans.flagged:
+        ans.awarded_marks = 0.0
+    return ans

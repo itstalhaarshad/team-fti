@@ -16,9 +16,14 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from core.schemas import Precedent, Rubric, StudentResult, StudentSummary
+from core.llm import ImagePart
+from core.schemas import GradedAnswer, Precedent, Rubric, StudentResult, StudentSummary
 
 BATCHES_ROOT = Path("data/batches")
+
+# mime <-> file extension for persisting student sheets so flagged answers can be re-graded later
+_MIME_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "application/pdf": "pdf"}
+_EXT_MIME = {v: k for k, v in _MIME_EXT.items()}
 
 
 class Memory:
@@ -98,6 +103,41 @@ class Memory:
                 self._audit("edit_score",
                             {"student_id": student_id, "question": question,
                              "old": old, "new": a.awarded_marks, "by": by})
+                break
+        data[student_id] = result.model_dump()
+        self.results_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # ---- student sheets (stored so flagged answers can be re-graded after review) ----
+    def save_sheet_parts(self, student_id: str, parts: List[ImagePart]) -> None:
+        d = self.dir / "sheets" / student_id
+        d.mkdir(parents=True, exist_ok=True)
+        for old in d.iterdir():
+            old.unlink()
+        for i, p in enumerate(parts):
+            ext = _MIME_EXT.get(p.mime_type, "bin")
+            (d / f"page_{i}.{ext}").write_bytes(p.data)
+        self._audit("save_sheet", {"student_id": student_id, "pages": len(parts)})
+
+    def load_sheet_parts(self, student_id: str) -> List[ImagePart]:
+        d = self.dir / "sheets" / student_id
+        if not d.exists():
+            return []
+        parts: List[ImagePart] = []
+        for f in sorted(d.iterdir()):
+            mime = _EXT_MIME.get(f.suffix.lstrip(".").lower(), "application/octet-stream")
+            parts.append(ImagePart(data=f.read_bytes(), mime_type=mime))
+        return parts
+
+    # ---- replace one answer (used by the re-grade loop) ----
+    def replace_answer(self, student_id: str, answer: GradedAnswer, by: str = "ai-regrade") -> None:
+        data = self._read_results()
+        result = StudentResult.model_validate(data[student_id])
+        for idx, a in enumerate(result.answers):
+            if a.number == answer.number:
+                self._audit("regrade", {"student_id": student_id, "question": answer.number,
+                                        "old": a.awarded_marks, "new": answer.awarded_marks,
+                                        "still_flagged": answer.flagged, "by": by})
+                result.answers[idx] = answer
                 break
         data[student_id] = result.model_dump()
         self.results_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")

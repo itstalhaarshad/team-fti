@@ -12,10 +12,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from agents.grader import grade_sheet
+from agents.grader import grade_sheet, regrade_question
 from agents.rubric_architect import build_rubric
 from agents.summarizer import summarize
-from core.llm import Part
+from core.llm import ImagePart, Part
 from core.memory import Memory
 from core.schemas import (Confidence, Precedent, Rubric, StudentResult,
                           StudentSummary)
@@ -60,6 +60,8 @@ def grade_student(batch_id: str, sheet: StudentSheet) -> tuple[StudentResult, St
     if rubric is None:
         raise RuntimeError(f"No rubric in memory for batch {batch_id}; run setup_rubric first.")
 
+    image_parts = [p for p in sheet.parts if isinstance(p, ImagePart)]
+    mem.save_sheet_parts(sheet.student_id, image_parts)  # keep sheets for the re-grade loop
     precedents = mem.load_precedents()
     result = grade_sheet(sheet.student_id, sheet.parts, rubric, precedents)
     mem.save_result(result)
@@ -78,6 +80,35 @@ def grade_student(batch_id: str, sheet: StudentSheet) -> tuple[StudentResult, St
     summary = summarize(result)
     mem.save_summary(summary)
     return result, summary
+
+
+def regrade_flagged(batch_id: str, student_id: str, question_number: str,
+                    clarification: str) -> StudentResult:
+    """Teacher-in-the-loop: re-grade ONE flagged question with the teacher's clarification.
+
+    Reloads the stored sheet, re-grades just that question, persists the new answer, and (if it's
+    now confidently graded) appends a precedent so the clarification benefits later students too.
+    """
+    mem = Memory(batch_id)
+    rubric = mem.load_rubric()
+    if rubric is None:
+        raise RuntimeError(f"No rubric for batch {batch_id}.")
+    parts = mem.load_sheet_parts(student_id)
+    if not parts:
+        raise RuntimeError(f"No stored sheet for {student_id}; cannot re-grade.")
+
+    answer = regrade_question(student_id, parts, rubric, question_number, clarification,
+                              mem.load_precedents(question_number))
+    mem.replace_answer(student_id, answer)
+    if not answer.flagged and answer.confidence != Confidence.low:
+        mem.append_precedent(Precedent(
+            question=answer.number,
+            answer_fingerprint=_fingerprint(answer.transcribed_answer),
+            awarded_marks=answer.awarded_marks,
+            reason=answer.reasoning,
+            source_student=student_id,
+        ))
+    return mem.load_results()[student_id]
 
 
 def run_batch(batch_id: str, title: str, sheets: List[StudentSheet],

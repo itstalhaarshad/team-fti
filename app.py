@@ -10,7 +10,8 @@ import uuid
 import pandas as pd
 import streamlit as st
 
-from agents.orchestrator import StudentSheet, grade_student, setup_rubric
+from agents.orchestrator import (StudentSheet, grade_student, regrade_flagged,
+                                  setup_rubric)
 from core.images import prep_image
 from core.llm import ImagePart
 from core.memory import Memory
@@ -166,6 +167,17 @@ with tab_review:
                     mem().edit_score(sid, a.number, new, by="teacher")
                     st.success(f"Q{a.number} set to {new:g}. Flag cleared.")
                     st.rerun()
+
+                if a.flagged:
+                    st.markdown("**🔁 Or clarify and let the AI re-grade this one:**")
+                    hint = st.text_input("Clarification for the AI",
+                                         placeholder="e.g. 'the smudged word is photosynthesis'",
+                                         key=f"hint_{sid}_{a.number}")
+                    if st.button("Re-grade with clarification", key=f"regrade_{sid}_{a.number}"):
+                        with st.spinner("Re-grading just this answer..."):
+                            regrade_flagged(s.batch_id, sid, a.number, hint)
+                        st.success(f"Q{a.number} re-graded.")
+                        st.rerun()
 
 
 # --------------------------------------------------------------------------- #
