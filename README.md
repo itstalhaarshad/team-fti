@@ -25,11 +25,18 @@ The **consistency ledger** (precedents: "this answer earned these marks") is the
 value — it keeps the same answer earning the same mark across all 30 students. See `architecture.md`.
 
 ## Tech
-- Python + Streamlit UI.
-- Vision-LLM reads handwriting AND reasons in one call — **no separate OCR stage**.
-- One thin, provider-agnostic wrapper (`core/llm.py`). Default = **Google Gemini** (free AI Studio
-  key, vision + structured JSON). Swap to Claude/OpenAI by changing env vars only.
-- Structured JSON output (provider schema mode). Local/in-memory + local-file storage. No auth, no cloud DB.
+- **Language:** Python 3.12.
+- **UI:** Streamlit.
+- **AI:** vision-LLM reads handwriting AND reasons in one call — **no separate OCR stage**. One thin,
+  provider-agnostic wrapper (`core/llm.py`); default **Google Gemini** (`google-genai`, free AI Studio
+  key, vision + structured JSON via `response_schema`). Swap to Claude/OpenAI by changing env vars only.
+- **Data models:** Pydantic (`core/schemas.py`) — also used as the LLM structured-output schemas.
+- **Storage:** swappable via `STORAGE_BACKEND` (`core/store.py`). `local` = file-backed JSON under
+  `data/batches/` (default, zero setup); `firestore` = **Firebase Firestore**, scoped per teacher.
+- **Auth:** optional email signup/login via **Firebase Authentication** (`core/auth.py`, Identity
+  Toolkit REST). Disabled automatically when no Firebase key is set (single-user local mode).
+- **Images / export:** Pillow (light cleanup), python-docx (rubric/question `.docx`), openpyxl + pandas
+  (XLSX/CSV gradebook).
 
 ## Quick start
 ```bash
@@ -40,6 +47,41 @@ python cli.py --rubric data/samples/answer_key.jpg --sheet data/samples/student1
 # Full app:
 streamlit run app.py
 ```
+
+By default the app runs in **local mode**: no sign-in, file-backed storage under `data/batches/`.
+That's enough for a demo. To turn on **accounts + cloud storage**, configure Firebase below.
+
+## Accounts + cloud storage (Firebase) — optional
+
+When configured, the app gates behind email **signup/login** and stores every teacher's batches in
+**Firestore** under `users/{uid}/batches/{batch_id}` (so teachers only see their own work, and data
+survives restarts/redeploys).
+
+**One-time Firebase setup**
+1. [Firebase console](https://console.firebase.google.com) → **Add project**.
+2. **Authentication → Sign-in method →** enable **Email/Password**.
+3. **Firestore Database → Create database** (Production mode is fine — the server uses the Admin SDK,
+   which bypasses security rules), pick a region.
+4. **Project settings → General →** copy the **Web API key**.
+5. **Project settings → Service accounts → Generate new private key** → download the JSON.
+
+**Wire it up** (all of these are gitignored — never commit secrets):
+```bash
+pip install firebase-admin            # already in requirements.txt
+# save the downloaded JSON into the repo root as:
+#   firebase-service-account.json
+```
+Then in `.env`:
+```ini
+STORAGE_BACKEND=firestore
+FIREBASE_WEB_API_KEY=your-web-api-key          # safe to expose; identifies the project, not a secret
+FIREBASE_SERVICE_ACCOUNT=firebase-service-account.json   # the real secret — gitignored
+```
+Restart the app — you'll get a **Sign in / Create account** screen, and batches persist to Firestore.
+Leave `FIREBASE_WEB_API_KEY` blank to fall back to local single-user mode.
+
+> Note: student **sheet images** are still cached on local disk (Firestore's ~1 MB/document limit);
+> moving them to **Firebase Storage** is a planned follow-up.
 
 ## Deploying (Streamlit Community Cloud)
 The app deploys straight from GitHub — no code changes needed (keys are read from the

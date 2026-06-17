@@ -25,7 +25,6 @@ from core.schemas import BatchMeta, Confidence
 st.set_page_config(page_title="GradePanel", page_icon="📝", layout="wide")
 
 CONF_BADGE = {Confidence.high: "🟢 high", Confidence.medium: "🟡 medium", Confidence.low: "🔴 low"}
-USER_EMAIL = "itstalhaarshad@gmail.com"
 SHEET_TYPES = ["jpg", "jpeg", "png", "webp", "pdf"]
 DOC_TYPES = ["docx", "txt", "pdf", "jpg", "jpeg", "png", "webp"]
 SUBJECTS = ["English", "Mathematics", "Science", "Urdu", "Computer Science", "Other"]
@@ -98,7 +97,9 @@ def go_home():
 
 def display_email() -> str:
     u = ss().user
-    return u["email"] if u else USER_EMAIL
+    if u:
+        return u["email"]
+    return "local mode" if not auth.auth_enabled() else "guest"
 
 
 def render_login():
@@ -296,24 +297,34 @@ elif s.step == "documents":
 
     with right:
         st.subheader("2 · Answer sheets")
-        st.caption("MVP: one student at a time. Upload ALL pages for the student (multiple images or "
-                   "one PDF), then add.")
-        sid = st.text_input("Student ID", value=f"student_{len(s.staged) + 1}", key="new_sid")
+        st.caption("Add students one at a time — upload ALL pages for a student (multiple images or "
+                   "one PDF), then ➕ Add. Repeat to stage as many students as you like, then grade "
+                   "them all together.")
+        # key tied to uploader_key so both the ID and the uploader reset after each add
+        sid = st.text_input("Student ID", value=f"student_{len(s.staged) + 1}",
+                            key=f"sid_{s.uploader_key}").strip()
         pages = st.file_uploader("Answer sheet pages for this student", type=SHEET_TYPES,
                                  accept_multiple_files=True, key=f"pages_{s.uploader_key}")
         a, b = st.columns(2)
         if a.button("➕ Add student", disabled=not (pages and sid)):
-            s.staged.append({"id": sid, "parts": [uploaded_to_part(f) for f in pages],
-                             "files": [f.name for f in pages]})
-            s.uploader_key += 1
-            st.rerun()
-        if b.button("🗑️ Clear", disabled=not s.staged):
+            if any(item["id"] == sid for item in s.staged):
+                st.warning(f"Student id '{sid}' is already staged — use a different id.")
+            else:
+                s.staged.append({"id": sid, "parts": [uploaded_to_part(f) for f in pages],
+                                 "files": [f.name for f in pages]})
+                s.uploader_key += 1
+                st.rerun()
+        if b.button("🗑️ Clear all", disabled=not s.staged):
             s.staged = []
             st.rerun()
         if s.staged:
             st.write(f"**{len(s.staged)} student(s) staged:**")
-            for item in s.staged:
-                st.write(f"- **{item['id']}** — {len(item['parts'])} page(s)")
+            for idx, item in enumerate(s.staged):
+                row = st.columns([5, 1])
+                row[0].write(f"- **{item['id']}** — {len(item['parts'])} page(s)")
+                if row[1].button("✕", key=f"rm_{idx}", help="Remove"):
+                    s.staged.pop(idx)
+                    st.rerun()
 
     st.divider()
     have_scheme = bool(question_docs or rubric_docs or notes.strip() or s.rubric)
