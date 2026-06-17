@@ -63,20 +63,34 @@ def new_batch(name: str):
     s.step = "documents"
 
 
-def build_rubric_now(rubric_docs, notes):
-    text_blocks, key_parts = [], []
-    for up in rubric_docs or []:
+def _split_uploads(files):
+    """Split uploads into labeled text blocks (docx/txt) and vision parts (pdf/image)."""
+    texts, parts = [], []
+    for up in files or []:
         kind, val = classify_upload(up.name, up.getvalue())
-        (text_blocks if kind == "text" else key_parts).append(
-            f"--- {up.name} ---\n{val}" if kind == "text" else val)
+        if kind == "text":
+            texts.append(f"--- {up.name} ---\n{val}")
+        else:
+            parts.append(val)
+    return texts, parts
+
+
+def build_rubric_now(question_docs, rubric_docs, notes):
+    q_texts, q_parts = _split_uploads(question_docs)
+    r_texts, r_parts = _split_uploads(rubric_docs)
     blocks = []
-    if text_blocks:
-        blocks.append("PRIMARY — MARKING SCHEME / RUBRIC DOCUMENT(S):\n" + "\n\n".join(text_blocks))
+    if q_texts:
+        blocks.append("EXAM QUESTIONS — exactly what students were asked and answered. Build one "
+                      "rubric entry per question listed here:\n" + "\n\n".join(q_texts))
+    if r_texts:
+        blocks.append("MARKING SCHEME / RUBRIC — use this for max marks, per-criterion breakdown, and "
+                      "the marking policy. Where its wording differs from the questions above, the "
+                      "QUESTIONS define what was asked:\n" + "\n\n".join(r_texts))
     if notes and notes.strip():
-        blocks.append("SECONDARY — ADDITIONAL TEACHER NOTES:\n" + notes.strip())
+        blocks.append("ADDITIONAL TEACHER NOTES (secondary):\n" + notes.strip())
     guidelines = "\n\n".join(blocks) or None
     return setup_rubric(ss().batch_id, ss().batch_name, guidelines=guidelines,
-                        answer_key_parts=key_parts or None)
+                        answer_key_parts=(q_parts + r_parts) or None)
 
 
 # --------------------------------------------------------------------------- #
@@ -125,17 +139,21 @@ elif s.step == "documents":
     # --- marking scheme ---
     with left:
         st.subheader("1 · Marking scheme")
+        question_docs = st.file_uploader(
+            "Question paper — what students were asked (Word, PDF, or image)",
+            type=DOC_TYPES, accept_multiple_files=True, key="question_docs")
         rubric_docs = st.file_uploader(
-            "Rubric document — **primary** (Word, PDF, or image). Add the questions paper too if you like.",
+            "Rubric / marking scheme — marks & criteria (Word, PDF, or image)",
             type=DOC_TYPES, accept_multiple_files=True, key="rubric_docs")
         notes = st.text_area(
             "Additional guidelines / notes — *secondary, optional*",
             placeholder="e.g. Be lenient on spelling for second-language learners. "
                         "Weight content 70% / examples 20% / language 10%.",
-            height=140)
-        if st.button("👁 Preview rubric", disabled=not (rubric_docs or notes.strip())):
+            height=120)
+        if st.button("👁 Preview rubric",
+                     disabled=not (question_docs or rubric_docs or notes.strip())):
             with st.spinner("Rubric Architect structuring the marking scheme..."):
-                s.rubric = build_rubric_now(rubric_docs, notes)
+                s.rubric = build_rubric_now(question_docs, rubric_docs, notes)
             st.success(f"Rubric: {len(s.rubric.questions)} questions, {s.rubric.total_marks:g} marks.")
         if s.rubric:
             for q in s.rubric.questions:
@@ -167,15 +185,15 @@ elif s.step == "documents":
 
     # --- the one grade button ---
     st.divider()
-    have_scheme = bool(st.session_state.get("rubric_docs") or notes.strip() or s.rubric)
+    have_scheme = bool(question_docs or rubric_docs or notes.strip() or s.rubric)
     ready = have_scheme and bool(s.staged)
     if not ready:
-        st.info("Add a marking scheme **and** at least one student to enable grading.")
+        st.info("Add a question paper / rubric **and** at least one student to enable grading.")
     if st.button("🚀 Grade batch", type="primary", disabled=not ready, use_container_width=True):
         with st.status("Grading batch…", expanded=True) as status:
             if s.rubric is None:
                 st.write("🛠️ Rubric Architect structuring the marking scheme…")
-                s.rubric = build_rubric_now(st.session_state.get("rubric_docs"), notes)
+                s.rubric = build_rubric_now(question_docs, rubric_docs, notes)
             st.write(f"✓ Rubric ready — {len(s.rubric.questions)} questions, {s.rubric.total_marks:g} marks")
             n = len(s.staged)
             for i, item in enumerate(s.staged, start=1):
