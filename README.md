@@ -48,6 +48,11 @@ python cli.py --rubric data/samples/answer_key.jpg --sheet data/samples/student1
 streamlit run app.py
 ```
 
+> **After editing code or `git pull`, fully restart Streamlit (Ctrl+C, then run again).** Its auto-rerun
+> reloads the *script* but not imported modules, so a stale process can raise import errors like
+> `cannot import name 'list_batches'`. On Windows you can use **`./run.ps1`**, which clears bytecode
+> caches and launches fresh.
+
 By default the app runs in **local mode**: no sign-in, file-backed storage under `data/batches/`.
 That's enough for a demo. To turn on **accounts + cloud storage**, configure Firebase below.
 
