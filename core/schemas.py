@@ -70,12 +70,26 @@ class StudentResult(BaseModel):
         return [a for a in self.answers if a.flagged]
 
 
+# GraderOutput is the raw structured-output schema we hand the LLM (no student_id —
+# the orchestrator attaches that). Kept separate from StudentResult so the model only
+# decides per-question grading, not bookkeeping.
+class GraderOutput(BaseModel):
+    answers: List[GradedAnswer]
+
+
 # ---- Summary (Agent 3 output) ----
 class StudentSummary(BaseModel):
     student_id: str
     summary: str
     feedback: str
     pending_review: List[str] = Field(default_factory=list, description="Question numbers to review.")
+
+
+# SummarizerOutput is what the LLM returns (no student_id — attached by the orchestrator).
+class SummarizerOutput(BaseModel):
+    summary: str
+    feedback: str
+    pending_review: List[str] = Field(default_factory=list)
 
 
 # ---- Precedent ledger entry (shared memory, append-only) ----

@@ -21,11 +21,13 @@ Commit at every phase; judges read the git log.
 - Default model `gemini-2.5-flash`.
 
 ## Phases
-- [ ] **Phase 0 — Scaffold + founding docs.** git init, docs, requirements, .env.example, stubs.
-- [ ] **Phase 1 — Grading engine (NO UI).** llm wrapper + schemas + Architect + Grader, driven by
-      `cli.py` on ONE real sample sheet. Prove handwriting read + grade + confidence + flags.
-- [ ] **Phase 2 — Shared memory + agent panel.** Append-only ledger + precedent/consistency;
-      wire Summarizer + orchestrator over a multi-student batch.
+- [x] **Phase 0 — Scaffold + founding docs.** git init, docs, requirements, .env.example, stubs. ✅ committed
+- [x] **Phase 1 — Grading engine (NO UI).** llm wrapper + schemas + Architect + Grader, driven by
+      `cli.py`. ✅ Proven end-to-end on synthetic sheets vs live Gemini (read + grade + partial
+      marks + confidence + flag-instead-of-guess). Awaits real samples for handwriting-quality check.
+- [x] **Phase 2 — Shared memory + agent panel.** Append-only ledger + precedent/consistency +
+      audit log; Summarizer + orchestrator over a multi-student batch. ✅ Verified (ledger + audit
+      files persist; flagged answers correctly write no precedent).
 - [ ] **Phase 3 — Streamlit UI.** setup → upload → review/edit (reasoning + flags) → dashboard.
 - [ ] **Phase 4 — Export + polish.** XLSX/CSV, image cleanup, demo data.
 - [ ] **Phase 5 (stretch) — Flag → teacher clarifies → re-grade only flagged answers.**
