@@ -16,7 +16,7 @@ from agents.grader import grade_sheet, regrade_question
 from agents.rubric_architect import build_rubric
 from agents.summarizer import summarize
 from core.llm import ImagePart, Part
-from core.memory import Memory
+from core.store import get_store
 from core.schemas import (Confidence, Precedent, Rubric, StudentResult,
                           StudentSummary)
 
@@ -45,17 +45,18 @@ def _fingerprint(answer_text: str, limit: int = 120) -> str:
 
 
 def setup_rubric(batch_id: str, title: str, guidelines: Optional[str] = None,
-                 answer_key_parts: Optional[List[Part]] = None) -> Rubric:
+                 answer_key_parts: Optional[List[Part]] = None, uid: Optional[str] = None) -> Rubric:
     """Agent 1: build the rubric once and persist it to shared memory."""
-    mem = Memory(batch_id)
+    mem = get_store(batch_id, uid)
     rubric = build_rubric(title, guidelines=guidelines, answer_key_parts=answer_key_parts)
     mem.save_rubric(rubric)
     return rubric
 
 
-def grade_student(batch_id: str, sheet: StudentSheet) -> tuple[StudentResult, StudentSummary]:
+def grade_student(batch_id: str, sheet: StudentSheet,
+                  uid: Optional[str] = None) -> tuple[StudentResult, StudentSummary]:
     """Agents 2+3 for one student: grade against rubric+precedents, write precedents, summarize."""
-    mem = Memory(batch_id)
+    mem = get_store(batch_id, uid)
     rubric = mem.load_rubric()
     if rubric is None:
         raise RuntimeError(f"No rubric in memory for batch {batch_id}; run setup_rubric first.")
@@ -83,13 +84,13 @@ def grade_student(batch_id: str, sheet: StudentSheet) -> tuple[StudentResult, St
 
 
 def regrade_flagged(batch_id: str, student_id: str, question_number: str,
-                    clarification: str) -> StudentResult:
+                    clarification: str, uid: Optional[str] = None) -> StudentResult:
     """Teacher-in-the-loop: re-grade ONE flagged question with the teacher's clarification.
 
     Reloads the stored sheet, re-grades just that question, persists the new answer, and (if it's
     now confidently graded) appends a precedent so the clarification benefits later students too.
     """
-    mem = Memory(batch_id)
+    mem = get_store(batch_id, uid)
     rubric = mem.load_rubric()
     if rubric is None:
         raise RuntimeError(f"No rubric for batch {batch_id}.")
@@ -114,17 +115,17 @@ def regrade_flagged(batch_id: str, student_id: str, question_number: str,
 def run_batch(batch_id: str, title: str, sheets: List[StudentSheet],
               guidelines: Optional[str] = None,
               answer_key_parts: Optional[List[Part]] = None,
-              rubric: Optional[Rubric] = None) -> BatchView:
+              rubric: Optional[Rubric] = None, uid: Optional[str] = None) -> BatchView:
     """End-to-end: build rubric (unless provided) then grade every student sequentially."""
-    mem = Memory(batch_id)
+    mem = get_store(batch_id, uid)
     if rubric is None and mem.load_rubric() is None:
-        rubric = setup_rubric(batch_id, title, guidelines, answer_key_parts)
+        rubric = setup_rubric(batch_id, title, guidelines, answer_key_parts, uid=uid)
     else:
         rubric = rubric or mem.load_rubric()
 
     view = BatchView(batch_id=batch_id, rubric=rubric)
     for sheet in sheets:
-        result, summary = grade_student(batch_id, sheet)
+        result, summary = grade_student(batch_id, sheet, uid=uid)
         view.results[sheet.student_id] = result
         view.summaries[sheet.student_id] = summary
     return view

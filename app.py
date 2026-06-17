@@ -15,10 +15,11 @@ import streamlit as st
 
 from agents.orchestrator import (StudentSheet, grade_student, regrade_flagged,
                                   setup_rubric)
+from core import auth
 from core.documents import classify_upload
 from core.images import prep_image
 from core.llm import ImagePart
-from core.memory import Memory, list_batches
+from core.store import get_store, list_batches
 from core.schemas import BatchMeta, Confidence
 
 st.set_page_config(page_title="GradePanel", page_icon="📝", layout="wide")
@@ -35,6 +36,7 @@ SUBJECTS = ["English", "Mathematics", "Science", "Urdu", "Computer Science", "Ot
 # --------------------------------------------------------------------------- #
 def ss():
     s = st.session_state
+    s.setdefault("user", None)            # {uid, email, ...} when signed in (None = local mode)
     s.setdefault("step", "home")          # home -> foundation -> documents -> results
     s.setdefault("batch_id", None)
     s.setdefault("batch_name", "")
@@ -46,8 +48,13 @@ def ss():
     return s
 
 
+def current_uid():
+    u = ss().user
+    return u["uid"] if u else None
+
+
 def mem():
-    return Memory(ss().batch_id)
+    return get_store(ss().batch_id, current_uid())
 
 
 def uploaded_to_part(up) -> ImagePart:
@@ -64,7 +71,7 @@ def start_batch(subject: str, session: str):
     s.batch_id = f"{slug}-{uuid.uuid4().hex[:6]}"
     s.batch_name, s.subject, s.session = name, subject, session
     s.rubric, s.staged = None, []
-    Memory(s.batch_id).save_meta(BatchMeta(
+    get_store(s.batch_id, current_uid()).save_meta(BatchMeta(
         batch_id=s.batch_id, name=name, subject=subject, session=session,
         created_at=datetime.now().strftime("%Y-%m-%d %H:%M")))
     s.step = "documents"
@@ -72,7 +79,7 @@ def start_batch(subject: str, session: str):
 
 def open_batch(batch_id: str):
     s = ss()
-    m = Memory(batch_id)
+    m = get_store(batch_id, current_uid())
     meta = m.load_meta()
     s.batch_id = batch_id
     s.rubric = m.load_rubric()
@@ -87,6 +94,35 @@ def go_home():
     s = ss()
     s.step, s.batch_id, s.batch_name, s.subject, s.session = "home", None, "", "", ""
     s.rubric, s.staged = None, []
+
+
+def display_email() -> str:
+    u = ss().user
+    return u["email"] if u else USER_EMAIL
+
+
+def render_login():
+    st.title("📝 GradePanel")
+    st.caption("Sign in to grade and to keep your batches saved to your account.")
+    tab_in, tab_up = st.tabs(["Sign in", "Create account"])
+    with tab_in:
+        e = st.text_input("Email", key="li_email")
+        p = st.text_input("Password", type="password", key="li_pw")
+        if st.button("Sign in", type="primary", key="li_btn"):
+            try:
+                ss().user = auth.sign_in(e.strip(), p)
+                st.rerun()
+            except auth.AuthError as err:
+                st.error(str(err))
+    with tab_up:
+        e2 = st.text_input("Email", key="su_email")
+        p2 = st.text_input("Password (min 6 characters)", type="password", key="su_pw")
+        if st.button("Create account", type="primary", key="su_btn"):
+            try:
+                ss().user = auth.sign_up(e2.strip(), p2)
+                st.rerun()
+            except auth.AuthError as err:
+                st.error(str(err))
 
 
 def _split_uploads(files):
@@ -115,16 +151,26 @@ def build_rubric_now(question_docs, rubric_docs, notes):
         blocks.append("ADDITIONAL TEACHER NOTES (secondary):\n" + notes.strip())
     guidelines = "\n\n".join(blocks) or None
     return setup_rubric(ss().batch_id, ss().batch_name, guidelines=guidelines,
-                        answer_key_parts=(q_parts + r_parts) or None)
+                        answer_key_parts=(q_parts + r_parts) or None, uid=current_uid())
 
 
 # --------------------------------------------------------------------------- #
 # sidebar                                                                      #
 # --------------------------------------------------------------------------- #
 s = ss()
+
+# Auth gate: when Firebase is configured, require sign-in. Otherwise run in local single-user mode.
+if auth.auth_enabled() and not s.user:
+    render_login()
+    st.stop()
+
 with st.sidebar:
     st.markdown("## 📝 GradePanel")
-    st.caption(f"Signed in as **{USER_EMAIL}**")
+    st.caption(f"Signed in as **{display_email()}**")
+    if s.user and st.button("Log out"):
+        s.user = None
+        go_home()
+        st.rerun()
     st.divider()
     if s.step != "home":
         if s.batch_name:
@@ -144,13 +190,13 @@ with st.sidebar:
 # HOME — greeting + past batches                                               #
 # --------------------------------------------------------------------------- #
 if s.step == "home":
-    batches = list_batches()
+    batches = list_batches(current_uid())
     st.title("📝 GradePanel")
 
     if not batches:
         # ---- new user ----
         st.header("👋 Hello!")
-        st.caption(f"Signed in as {USER_EMAIL}")
+        st.caption(f"Signed in as {display_email()}")
         st.markdown(
             "**GradePanel grades handwritten exam answer sheets for you.** Upload a marking scheme "
             "and your students' scanned answers — an examiner panel of AI agents reads the "
@@ -168,7 +214,7 @@ if s.step == "home":
     else:
         # ---- returning user: dashboard of past batches ----
         st.header("👋 Welcome back!")
-        st.caption(f"Signed in as {USER_EMAIL}")
+        st.caption(f"Signed in as {display_email()}")
         total_students = sum(b["n_students"] for b in batches)
         k1, k2, k3 = st.columns(3)
         k1.metric("Batches", len(batches))
@@ -283,7 +329,8 @@ elif s.step == "documents":
             n = len(s.staged)
             for i, item in enumerate(s.staged, start=1):
                 st.write(f"✍️ Grading **{item['id']}** ({i}/{n}) — reading handwriting + scoring…")
-                grade_student(s.batch_id, StudentSheet(student_id=item["id"], parts=item["parts"]))
+                grade_student(s.batch_id, StudentSheet(student_id=item["id"], parts=item["parts"]),
+                              uid=current_uid())
             status.update(label=f"Graded {n} student(s).", state="complete")
         s.staged = []
         s.step = "results"
@@ -341,7 +388,7 @@ elif s.step == "results":
                                              key=f"hint_{sid}_{a.number}")
                         if st.button("Re-grade with clarification", key=f"regrade_{sid}_{a.number}"):
                             with st.spinner("Re-grading just this answer…"):
-                                regrade_flagged(s.batch_id, sid, a.number, hint)
+                                regrade_flagged(s.batch_id, sid, a.number, hint, uid=current_uid())
                             st.success(f"Q{a.number} re-graded.")
                             st.rerun()
 
