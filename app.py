@@ -18,7 +18,7 @@ from agents.orchestrator import (StudentSheet, grade_student, regrade_flagged,
 from core import auth
 from core.documents import classify_upload
 from core.images import prep_image
-from core.llm import ImagePart, LLMError
+from core.llm import ImagePart
 from core.store import get_store, list_batches
 from core.schemas import BatchMeta, Confidence
 
@@ -155,25 +155,6 @@ def build_rubric_now(question_docs, rubric_docs, notes):
                         answer_key_parts=(q_parts + r_parts) or None, uid=current_uid())
 
 
-def show_llm_error(e: LLMError):
-    """Render the real provider error + an actionable hint instead of a redacted crash."""
-    st.error(f"Grading service error [{e.status}]: {e.message}")
-    s_, msg = e.status, (e.message or "").lower()
-    if s_ == 429 or "resource_exhausted" in msg or "quota" in msg or "rate" in msg:
-        st.info("**Gemini free-tier rate/quota limit.** Options: wait ~60s and retry · set "
-                "`LLM_MODEL=gemini-2.5-flash-lite` in Secrets (higher free limits) · enable billing on "
-                "the key's Google Cloud project. ⚠️ Multiple keys in the **same** Google project share "
-                "one quota — a new key only helps if it's from a **different project/account**.")
-    elif s_ in (400, 401) and ("api key" in msg or "api_key" in msg or "invalid" in msg):
-        st.info("The **GEMINI_API_KEY** looks invalid — re-check the Secrets value (no quotes/spaces).")
-    elif s_ == 403:
-        st.info("Access denied — the **Generative Language API** may be disabled for this key's "
-                "project, or the key is restricted to other APIs/referrers.")
-    elif s_ == 400:
-        st.info("Bad request — often the payload is too large (try **fewer pages per student**) or the "
-                "**model name** is unsupported. Check `LLM_MODEL`.")
-
-
 # --------------------------------------------------------------------------- #
 # sidebar                                                                      #
 # --------------------------------------------------------------------------- #
@@ -304,12 +285,9 @@ elif s.step == "documents":
             height=120)
         if st.button("👁 Preview rubric",
                      disabled=not (question_docs or rubric_docs or notes.strip())):
-            try:
-                with st.spinner("Rubric Architect structuring the marking scheme..."):
-                    s.rubric = build_rubric_now(question_docs, rubric_docs, notes)
-                st.success(f"Rubric: {len(s.rubric.questions)} questions, {s.rubric.total_marks:g} marks.")
-            except LLMError as e:
-                show_llm_error(e)
+            with st.spinner("Rubric Architect structuring the marking scheme..."):
+                s.rubric = build_rubric_now(question_docs, rubric_docs, notes)
+            st.success(f"Rubric: {len(s.rubric.questions)} questions, {s.rubric.total_marks:g} marks.")
         if s.rubric:
             for q in s.rubric.questions:
                 with st.expander(f"Q{q.number} — {q.max_marks:g} marks"):
@@ -354,29 +332,20 @@ elif s.step == "documents":
     if not ready:
         st.info("Add a question paper / rubric **and** at least one student to enable grading.")
     if st.button("🚀 Grade batch", type="primary", disabled=not ready, use_container_width=True):
-        try:
-            graded = 0
-            with st.status("Grading batch…", expanded=True) as status:
-                if s.rubric is None:
-                    st.write("🛠️ Rubric Architect structuring the marking scheme…")
-                    s.rubric = build_rubric_now(question_docs, rubric_docs, notes)
-                st.write(f"✓ Rubric ready — {len(s.rubric.questions)} questions, {s.rubric.total_marks:g} marks")
-                n = len(s.staged)
-                for i, item in enumerate(s.staged, start=1):
-                    st.write(f"✍️ Grading **{item['id']}** ({i}/{n}) — reading handwriting + scoring…")
-                    grade_student(s.batch_id, StudentSheet(student_id=item["id"], parts=item["parts"]),
-                                  uid=current_uid())
-                    graded += 1
-                status.update(label=f"Graded {n} student(s).", state="complete")
-            s.staged = s.staged[graded:]  # keep any ungraded if we stopped early
-            s.step = "results"
-            st.rerun()
-        except LLMError as e:
-            show_llm_error(e)
-            if graded:
-                st.warning(f"{graded} student(s) graded before the error — they're saved. "
-                           "Fix the issue above, then grade the rest.")
-                s.staged = s.staged[graded:]
+        with st.status("Grading batch…", expanded=True) as status:
+            if s.rubric is None:
+                st.write("🛠️ Rubric Architect structuring the marking scheme…")
+                s.rubric = build_rubric_now(question_docs, rubric_docs, notes)
+            st.write(f"✓ Rubric ready — {len(s.rubric.questions)} questions, {s.rubric.total_marks:g} marks")
+            n = len(s.staged)
+            for i, item in enumerate(s.staged, start=1):
+                st.write(f"✍️ Grading **{item['id']}** ({i}/{n}) — reading handwriting + scoring…")
+                grade_student(s.batch_id, StudentSheet(student_id=item["id"], parts=item["parts"]),
+                              uid=current_uid())
+            status.update(label=f"Graded {n} student(s).", state="complete")
+        s.staged = []
+        s.step = "results"
+        st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -429,13 +398,10 @@ elif s.step == "results":
                                              placeholder="e.g. 'the smudged word is photosynthesis'",
                                              key=f"hint_{sid}_{a.number}")
                         if st.button("Re-grade with clarification", key=f"regrade_{sid}_{a.number}"):
-                            try:
-                                with st.spinner("Re-grading just this answer…"):
-                                    regrade_flagged(s.batch_id, sid, a.number, hint, uid=current_uid())
-                                st.success(f"Q{a.number} re-graded.")
-                                st.rerun()
-                            except LLMError as e:
-                                show_llm_error(e)
+                            with st.spinner("Re-grading just this answer…"):
+                                regrade_flagged(s.batch_id, sid, a.number, hint, uid=current_uid())
+                            st.success(f"Q{a.number} re-graded.")
+                            st.rerun()
 
     with tab_dash:
         if not results or not s.rubric:
