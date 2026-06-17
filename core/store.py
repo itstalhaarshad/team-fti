@@ -20,8 +20,9 @@ def _backend() -> str:
 
 
 def get_store(batch_id: str, uid: Optional[str] = None):
-    """Return a store for one batch, using the configured backend."""
-    if _backend() == "firestore":
+    """Return a store for one batch. Firestore needs a signed-in uid; without one (auth disabled)
+    we fall back to local file storage so the app works with the login screen turned off."""
+    if _backend() == "firestore" and uid:
         from core.firestore_store import FirestoreStore
         return FirestoreStore(batch_id, uid)
     return Memory(batch_id)
@@ -29,7 +30,7 @@ def get_store(batch_id: str, uid: Optional[str] = None):
 
 def list_batches(uid: Optional[str] = None) -> List[dict]:
     """List batch summaries for the home dashboard, scoped to the user when on firestore."""
-    if _backend() == "firestore":
+    if _backend() == "firestore" and uid:
         from core.firestore_store import list_batches_fs
         return list_batches_fs(uid)
     return _local_list_batches()
