@@ -1,13 +1,14 @@
 """GradePanel — Streamlit teacher UI.
 
-Product flow: Create batch -> Add documents (rubric + student sheets) -> one click to grade
--> Results (review/edit + dashboard + export). Coordinates the 3-agent panel via
-agents.orchestrator over the file-backed shared Memory.
+Flow: Home (greeting + past batches) -> Foundation (subject + session) -> Start Grading
+-> Documents (rubric + exam sheet + answer sheets) -> one-click grade -> Results (review + dashboard).
+Coordinates the 3-agent panel via agents.orchestrator over the file-backed shared Memory.
 """
 from __future__ import annotations
 
 import re
 import uuid
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -17,8 +18,8 @@ from agents.orchestrator import (StudentSheet, grade_student, regrade_flagged,
 from core.documents import classify_upload
 from core.images import prep_image
 from core.llm import ImagePart
-from core.memory import Memory
-from core.schemas import Confidence
+from core.memory import Memory, list_batches
+from core.schemas import BatchMeta, Confidence
 
 st.set_page_config(page_title="GradePanel", page_icon="📝", layout="wide")
 
@@ -26,6 +27,7 @@ CONF_BADGE = {Confidence.high: "🟢 high", Confidence.medium: "🟡 medium", Co
 USER_EMAIL = "itstalhaarshad@gmail.com"
 SHEET_TYPES = ["jpg", "jpeg", "png", "webp", "pdf"]
 DOC_TYPES = ["docx", "txt", "pdf", "jpg", "jpeg", "png", "webp"]
+SUBJECTS = ["English", "Mathematics", "Science", "Urdu", "Computer Science", "Other"]
 
 
 # --------------------------------------------------------------------------- #
@@ -33,9 +35,11 @@ DOC_TYPES = ["docx", "txt", "pdf", "jpg", "jpeg", "png", "webp"]
 # --------------------------------------------------------------------------- #
 def ss():
     s = st.session_state
-    s.setdefault("step", "create")        # create -> documents -> results
+    s.setdefault("step", "home")          # home -> foundation -> documents -> results
     s.setdefault("batch_id", None)
     s.setdefault("batch_name", "")
+    s.setdefault("subject", "")
+    s.setdefault("session", "")
     s.setdefault("rubric", None)
     s.setdefault("staged", [])            # [{id, parts, files}]
     s.setdefault("uploader_key", 0)
@@ -53,18 +57,39 @@ def uploaded_to_part(up) -> ImagePart:
     return prep_image(data)
 
 
-def new_batch(name: str):
+def start_batch(subject: str, session: str):
     s = ss()
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "batch"
+    name = f"{subject} — {session}"
+    slug = re.sub(r"[^a-z0-9]+", "-", f"{subject} {session}".lower()).strip("-") or "batch"
     s.batch_id = f"{slug}-{uuid.uuid4().hex[:6]}"
-    s.batch_name = name
-    s.rubric = None
-    s.staged = []
+    s.batch_name, s.subject, s.session = name, subject, session
+    s.rubric, s.staged = None, []
+    Memory(s.batch_id).save_meta(BatchMeta(
+        batch_id=s.batch_id, name=name, subject=subject, session=session,
+        created_at=datetime.now().strftime("%Y-%m-%d %H:%M")))
     s.step = "documents"
 
 
+def open_batch(batch_id: str):
+    s = ss()
+    m = Memory(batch_id)
+    meta = m.load_meta()
+    s.batch_id = batch_id
+    s.rubric = m.load_rubric()
+    s.batch_name = (meta.name if meta else None) or (s.rubric.title if s.rubric else batch_id)
+    s.subject = meta.subject if meta else "—"
+    s.session = meta.session if meta else "—"
+    s.staged = []
+    s.step = "results"
+
+
+def go_home():
+    s = ss()
+    s.step, s.batch_id, s.batch_name, s.subject, s.session = "home", None, "", "", ""
+    s.rubric, s.staged = None, []
+
+
 def _split_uploads(files):
-    """Split uploads into labeled text blocks (docx/txt) and vision parts (pdf/image)."""
     texts, parts = [], []
     for up in files or []:
         kind, val = classify_upload(up.name, up.getvalue())
@@ -97,50 +122,111 @@ def build_rubric_now(question_docs, rubric_docs, notes):
 # sidebar                                                                      #
 # --------------------------------------------------------------------------- #
 s = ss()
-STEPS = [("create", "Create batch"), ("documents", "Add documents"), ("results", "Results")]
 with st.sidebar:
     st.markdown("## 📝 GradePanel")
     st.caption(f"Signed in as **{USER_EMAIL}**")
     st.divider()
-    if s.batch_name:
-        st.markdown(f"**Batch:** {s.batch_name}")
-    cur = [k for k, _ in STEPS].index(s.step)
-    for i, (key, label) in enumerate(STEPS):
-        mark = "🟢" if i < cur else ("🔵" if i == cur else "⚪")
-        st.markdown(f"{mark} {label}")
-    st.divider()
-    if s.batch_name and st.button("➕ New batch"):
-        s.step, s.batch_id, s.batch_name, s.rubric, s.staged = "create", None, "", None, []
-        st.rerun()
+    if s.step != "home":
+        if s.batch_name:
+            st.markdown(f"**{s.batch_name}**")
+        flow = [("foundation", "Foundation"), ("documents", "Documents"), ("results", "Results")]
+        keys = [k for k, _ in flow]
+        cur = keys.index(s.step) if s.step in keys else 0
+        for i, (k, label) in enumerate(flow):
+            st.markdown(f"{'🟢' if i < cur else ('🔵' if i == cur else '⚪')} {label}")
+        st.divider()
+        if st.button("🏠 Home"):
+            go_home()
+            st.rerun()
 
 
 # --------------------------------------------------------------------------- #
-# STEP 1 — create batch                                                        #
+# HOME — greeting + past batches                                               #
 # --------------------------------------------------------------------------- #
-if s.step == "create":
+if s.step == "home":
+    batches = list_batches()
     st.title("📝 GradePanel")
-    st.subheader("Create a grading batch")
-    st.caption("A batch = one class/exam you're grading (rubric + all student sheets).")
-    name = st.text_input("Batch name", placeholder="e.g. Functional English 1 2026")
-    if st.button("Create batch ➜", type="primary", disabled=not name.strip()):
-        new_batch(name.strip())
+
+    if not batches:
+        # ---- new user ----
+        st.header("👋 Hello!")
+        st.caption(f"Signed in as {USER_EMAIL}")
+        st.markdown(
+            "**GradePanel grades handwritten exam answer sheets for you.** Upload a marking scheme "
+            "and your students' scanned answers — an examiner panel of AI agents reads the "
+            "handwriting and grades each question against your rubric, showing its reasoning and a "
+            "confidence level, and flagging anything it can't read confidently for you to review. "
+            "You stay in control: edit any score, then export the gradebook to a spreadsheet.")
+        st.markdown("#### Your first steps")
+        st.markdown(
+            "1. **Set up the foundation** — pick your subject and name the exam session.\n"
+            "2. **Add documents** — rubric, exam (question) paper, and each student's answer sheet.\n"
+            "3. **Grade & review** — one click grades the batch; you review, edit, and export.")
+        if st.button("🚀 Set up your foundation", type="primary"):
+            s.step = "foundation"
+            st.rerun()
+    else:
+        # ---- returning user: dashboard of past batches ----
+        st.header("👋 Welcome back!")
+        st.caption(f"Signed in as {USER_EMAIL}")
+        total_students = sum(b["n_students"] for b in batches)
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Batches", len(batches))
+        k2.metric("Students graded", total_students)
+        k3.metric("Open flags", sum(b["flags"] for b in batches))
+
+        if st.button("➕ New grading session", type="primary"):
+            s.step = "foundation"
+            st.rerun()
+
+        st.markdown("### Your batches")
+        for b in batches:
+            with st.container(border=True):
+                c = st.columns([4, 2, 2, 2])
+                c[0].markdown(f"**{b['name']}**  \n{b['subject']} · {b['session']}  \n_{b['created']}_")
+                c[1].markdown(f"👥 {b['n_students']} student(s)")
+                avg_txt = f"{b['avg']:.1f}/{b['total_marks']:g}" if b["total_marks"] else f"{b['avg']:.1f}"
+                c[2].markdown(f"📊 Avg {avg_txt}  \n🚩 {b['flags']} flag(s)")
+                if c[3].button("Open ➜", key=f"open_{b['batch_id']}"):
+                    open_batch(b["batch_id"])
+                    st.rerun()
+
+
+# --------------------------------------------------------------------------- #
+# FOUNDATION — subject + session, then Start Grading                           #
+# --------------------------------------------------------------------------- #
+elif s.step == "foundation":
+    st.title("🧱 Set up the foundation")
+    st.caption("Tell us what you're grading. This names the session you're about to create.")
+
+    choice = st.selectbox("Primary subject", SUBJECTS, index=0)
+    subject = st.text_input("Subject name", placeholder="e.g. English") if choice == "Other" else choice
+    session = st.text_input("Exam session name", placeholder="e.g. Mid-term 2026")
+
+    ready = bool(subject and subject.strip()) and bool(session.strip())
+    col_a, col_b = st.columns([1, 4])
+    if col_a.button("← Back"):
+        go_home()
+        st.rerun()
+    if col_b.button("Start Grading ➜", type="primary", disabled=not ready):
+        start_batch(subject.strip(), session.strip())
         st.rerun()
 
 
 # --------------------------------------------------------------------------- #
-# STEP 2 — add documents, then grade                                           #
+# DOCUMENTS — rubric + exam sheet + answer sheets, then grade                  #
 # --------------------------------------------------------------------------- #
 elif s.step == "documents":
     st.title(f"📂 {s.batch_name}")
-    st.caption("Add the marking scheme and the student answer sheets, then grade the whole batch.")
+    st.caption("Attach the marking scheme, the exam (question) paper, and each student's answer sheet, "
+               "then grade the batch.")
 
     left, right = st.columns(2, gap="large")
 
-    # --- marking scheme ---
     with left:
         st.subheader("1 · Marking scheme")
         question_docs = st.file_uploader(
-            "Question paper — what students were asked (Word, PDF, or image)",
+            "Exam sheet / question paper — what students were asked (Word, PDF, or image)",
             type=DOC_TYPES, accept_multiple_files=True, key="question_docs")
         rubric_docs = st.file_uploader(
             "Rubric / marking scheme — marks & criteria (Word, PDF, or image)",
@@ -162,12 +248,12 @@ elif s.step == "documents":
                     for kp in q.key_points:
                         st.markdown(f"- {kp}")
 
-    # --- students ---
     with right:
-        st.subheader("2 · Student answer sheets")
-        st.caption("Upload ALL pages for one student together (multiple images or one PDF), then add.")
+        st.subheader("2 · Answer sheets")
+        st.caption("MVP: one student at a time. Upload ALL pages for the student (multiple images or "
+                   "one PDF), then add.")
         sid = st.text_input("Student ID", value=f"student_{len(s.staged) + 1}", key="new_sid")
-        pages = st.file_uploader("Pages for this student", type=SHEET_TYPES,
+        pages = st.file_uploader("Answer sheet pages for this student", type=SHEET_TYPES,
                                  accept_multiple_files=True, key=f"pages_{s.uploader_key}")
         a, b = st.columns(2)
         if a.button("➕ Add student", disabled=not (pages and sid)):
@@ -183,7 +269,6 @@ elif s.step == "documents":
             for item in s.staged:
                 st.write(f"- **{item['id']}** — {len(item['parts'])} page(s)")
 
-    # --- the one grade button ---
     st.divider()
     have_scheme = bool(question_docs or rubric_docs or notes.strip() or s.rubric)
     ready = have_scheme and bool(s.staged)
@@ -206,7 +291,7 @@ elif s.step == "documents":
 
 
 # --------------------------------------------------------------------------- #
-# STEP 3 — results (review + dashboard)                                        #
+# RESULTS — review/edit + dashboard                                            #
 # --------------------------------------------------------------------------- #
 elif s.step == "results":
     results = mem().load_results()
@@ -214,15 +299,14 @@ elif s.step == "results":
     if s.rubric is None:
         s.rubric = mem().load_rubric()
 
-    st.title(f"✅ {s.batch_name} — results")
-    c1, c2 = st.columns([1, 1])
-    if c1.button("➕ Add / grade more students"):
+    st.title(f"✅ {s.batch_name}")
+    st.caption(f"{s.subject} · {s.session}")
+    if st.button("➕ Add / grade more students"):
         s.step = "documents"
         st.rerun()
 
     tab_review, tab_dash = st.tabs(["Review & edit", "Dashboard"])
 
-    # ---- review & edit ----
     with tab_review:
         if not results:
             st.info("No graded students yet.")
@@ -261,7 +345,6 @@ elif s.step == "results":
                             st.success(f"Q{a.number} re-graded.")
                             st.rerun()
 
-    # ---- dashboard ----
     with tab_dash:
         if not results or not s.rubric:
             st.info("Grade some students to populate the dashboard.")

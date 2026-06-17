@@ -16,8 +16,11 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from datetime import datetime
+
 from core.llm import ImagePart
-from core.schemas import GradedAnswer, Precedent, Rubric, StudentResult, StudentSummary
+from core.schemas import (BatchMeta, GradedAnswer, Precedent, Rubric,
+                          StudentResult, StudentSummary)
 
 BATCHES_ROOT = Path("data/batches")
 
@@ -36,6 +39,17 @@ class Memory:
         self.results_path = self.dir / "results.json"
         self.summaries_path = self.dir / "summaries.json"
         self.audit_path = self.dir / "audit.jsonl"
+        self.meta_path = self.dir / "meta.json"
+
+    # ---- batch metadata ----
+    def save_meta(self, meta: BatchMeta) -> None:
+        self.meta_path.write_text(meta.model_dump_json(indent=2), encoding="utf-8")
+        self._audit("save_meta", {"name": meta.name, "subject": meta.subject, "session": meta.session})
+
+    def load_meta(self) -> Optional[BatchMeta]:
+        if not self.meta_path.exists():
+            return None
+        return BatchMeta.model_validate_json(self.meta_path.read_text(encoding="utf-8"))
 
     # ---- audit (append-only) ----
     def _audit(self, action: str, detail: dict) -> None:
@@ -155,3 +169,38 @@ class Memory:
             return {}
         data = json.loads(self.summaries_path.read_text(encoding="utf-8"))
         return {sid: StudentSummary.model_validate(s) for sid, s in data.items()}
+
+
+def list_batches() -> List[dict]:
+    """Summarize every batch that has been graded, newest first (for the home dashboard)."""
+    out: List[dict] = []
+    if not BATCHES_ROOT.exists():
+        return out
+    for d in sorted(BATCHES_ROOT.iterdir()):
+        results_p = d / "results.json"
+        if not d.is_dir() or not results_p.exists():
+            continue
+        m = Memory(d.name)
+        meta = m.load_meta()
+        rubric = m.load_rubric()
+        results = m.load_results()
+        n = len(results)
+        avg = sum(r.total_awarded for r in results.values()) / n if n else 0.0
+        flags = sum(len(r.open_flags) for r in results.values())
+        mtime = results_p.stat().st_mtime
+        created = (meta.created_at if meta and meta.created_at
+                   else datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"))
+        out.append({
+            "batch_id": d.name,
+            "name": (meta.name if meta else None) or (rubric.title if rubric else d.name),
+            "subject": meta.subject if meta else "—",
+            "session": meta.session if meta else "—",
+            "created": created,
+            "n_students": n,
+            "avg": avg,
+            "total_marks": rubric.total_marks if rubric else 0.0,
+            "flags": flags,
+            "_mtime": mtime,
+        })
+    out.sort(key=lambda b: (b["created"], b["_mtime"]), reverse=True)
+    return out

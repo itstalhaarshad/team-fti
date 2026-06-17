@@ -92,6 +92,15 @@ class SummarizerOutput(BaseModel):
     pending_review: List[str] = Field(default_factory=list)
 
 
+# ---- Batch metadata (for the home dashboard / past-batches list) ----
+class BatchMeta(BaseModel):
+    batch_id: str
+    name: str
+    subject: str = "—"
+    session: str = "—"
+    created_at: str = ""
+
+
 # ---- Precedent ledger entry (shared memory, append-only) ----
 class Precedent(BaseModel):
     question: str
