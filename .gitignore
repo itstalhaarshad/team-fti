@@ -1,0 +1,21 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# runtime data / batch memory stores (audit logs are per-run, not source)
+data/batches/
+*.xlsx
+*.csv
+
+# keep sample folder tracked but ignore the actual sheets unless we curate them
+data/samples/*
+!data/samples/.gitkeep
+
+# os
+.DS_Store
+Thumbs.db
