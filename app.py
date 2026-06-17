@@ -12,6 +12,7 @@ import streamlit as st
 
 from agents.orchestrator import (StudentSheet, grade_student, regrade_flagged,
                                   setup_rubric)
+from core.documents import classify_upload
 from core.images import prep_image
 from core.llm import ImagePart
 from core.memory import Memory
@@ -31,6 +32,8 @@ def ss():
     s.setdefault("title", "10th Grade — English")
     s.setdefault("rubric", None)
     s.setdefault("graded", False)
+    s.setdefault("staged", [])        # students queued for grading: [{id, parts, files}]
+    s.setdefault("uploader_key", 0)   # bump to reset the page uploader after each add
     return s
 
 
@@ -64,25 +67,40 @@ tab_setup, tab_upload, tab_review, tab_dash = st.tabs(
 with tab_setup:
     st.subheader("Marking scheme")
     s.title = st.text_input("Batch title", s.title)
-    guidelines = st.text_area(
-        "Marking guidelines (free text)",
-        placeholder="Q1 (5 marks): Define photosynthesis. Key points: sunlight, CO2+water; "
-                    "glucose+oxygen; chloroplast/chlorophyll.\nQ2 (5 marks): ...",
-        height=160,
-    )
-    key_files = st.file_uploader(
-        "Model / sample answer sheet (optional — image or PDF)",
-        type=["jpg", "jpeg", "png", "webp", "pdf"], accept_multiple_files=True)
+
+    st.markdown("**① Rubric / marking-scheme document — _primary_**")
+    rubric_docs = st.file_uploader(
+        "Upload the rubric (Word .docx, PDF, or image). You can also add the questions paper here.",
+        type=["docx", "txt", "pdf", "jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True, key="rubric_docs")
+
+    st.markdown("**② Additional guidelines / notes — _secondary, optional_**")
+    notes = st.text_area(
+        "Anything to add on top of the document (leniency, context, the actual question wording, …)",
+        placeholder="e.g. Be lenient on spelling for second-language learners. "
+                    "Weight content 70% / examples 20% / language 10%.",
+        height=120)
 
     if st.button("🛠️ Build rubric", type="primary"):
-        if not guidelines.strip() and not key_files:
-            st.error("Provide guidelines text and/or a model answer sheet.")
+        if not rubric_docs and not notes.strip():
+            st.error("Upload a rubric document and/or add notes.")
         else:
+            text_blocks, key_parts = [], []
+            for up in rubric_docs or []:
+                kind, val = classify_upload(up.name, up.getvalue())
+                if kind == "text":
+                    text_blocks.append(f"--- {up.name} ---\n{val}")
+                else:
+                    key_parts.append(val)
+            blocks = []
+            if text_blocks:
+                blocks.append("PRIMARY — MARKING SCHEME / RUBRIC DOCUMENT(S):\n" + "\n\n".join(text_blocks))
+            if notes.strip():
+                blocks.append("SECONDARY — ADDITIONAL TEACHER NOTES:\n" + notes.strip())
+            guidelines = "\n\n".join(blocks) or None
             with st.spinner("Rubric Architect is structuring the marking scheme..."):
-                key_parts = [uploaded_to_part(f) for f in key_files] if key_files else None
-                s.rubric = setup_rubric(s.batch_id, s.title,
-                                        guidelines=guidelines or None,
-                                        answer_key_parts=key_parts)
+                s.rubric = setup_rubric(s.batch_id, s.title, guidelines=guidelines,
+                                        answer_key_parts=key_parts or None)
                 s.graded = False
             st.success(f"Rubric built — {len(s.rubric.questions)} questions, "
                        f"{s.rubric.total_marks:g} total marks.")
@@ -106,31 +124,43 @@ with tab_upload:
     if not s.rubric:
         st.info("Build the rubric in tab ① first.")
     else:
-        st.subheader("Upload student answer sheets")
-        st.caption("Each uploaded file = one student (id taken from the filename). "
-                   "Multi-page students: combine pages into a single PDF.")
-        sheets_files = st.file_uploader(
-            "Student sheets (images or PDFs)",
+        st.subheader("Add a student")
+        st.caption("Upload ALL pages for one student together (multiple images, or a single PDF), "
+                   "give them an id, and add them to the batch. Repeat for each student.")
+        sid = st.text_input("Student ID", value=f"student_{len(s.staged) + 1}", key="new_sid")
+        pages = st.file_uploader(
+            "Pages for this student (images or one PDF)",
             type=["jpg", "jpeg", "png", "webp", "pdf"], accept_multiple_files=True,
-            key="student_files")
+            key=f"pages_{s.uploader_key}")
 
-        if sheets_files:
-            st.write(f"**{len(sheets_files)} sheet(s) staged:** " +
-                     ", ".join(f.name for f in sheets_files))
+        c1, c2 = st.columns(2)
+        if c1.button("➕ Add student to batch", disabled=not (pages and sid)):
+            s.staged.append({"id": sid, "parts": [uploaded_to_part(f) for f in pages],
+                             "files": [f.name for f in pages]})
+            s.uploader_key += 1  # reset the uploader for the next student
+            st.rerun()
+        if c2.button("🗑️ Clear staged", disabled=not s.staged):
+            s.staged = []
+            st.rerun()
 
-        if st.button("🤖 Grade all sheets", type="primary", disabled=not sheets_files):
-            progress = st.progress(0.0)
-            status = st.empty()
-            n = len(sheets_files)
-            for i, f in enumerate(sheets_files, start=1):
-                sid = f.name.rsplit(".", 1)[0]
-                status.write(f"Grading **{sid}** ({i}/{n}) — reading handwriting + scoring...")
-                sheet = StudentSheet(student_id=sid, parts=[uploaded_to_part(f)])
-                grade_student(s.batch_id, sheet)  # persists to shared memory
-                progress.progress(i / n)
-            s.graded = True
-            status.write("Done.")
-            st.success(f"Graded {n} student(s). See tabs ③ and ④.")
+        if s.staged:
+            st.divider()
+            st.write(f"**{len(s.staged)} student(s) staged:**")
+            for item in s.staged:
+                st.write(f"- **{item['id']}** — {len(item['parts'])} page(s)")
+
+            if st.button("🤖 Grade staged students", type="primary"):
+                progress = st.progress(0.0)
+                status = st.empty()
+                n = len(s.staged)
+                for i, item in enumerate(s.staged, start=1):
+                    status.write(f"Grading **{item['id']}** ({i}/{n}) — reading handwriting + scoring...")
+                    grade_student(s.batch_id, StudentSheet(student_id=item["id"], parts=item["parts"]))
+                    progress.progress(i / n)
+                s.graded = True
+                s.staged = []
+                status.write("Done.")
+                st.success(f"Graded {n} student(s). See tabs ③ and ④.")
 
 
 # --------------------------------------------------------------------------- #
